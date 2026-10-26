@@ -1,0 +1,1183 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.48.1.52935",
+      "templateHash": "17388366722764429810"
+    }
+  },
+  "parameters": {
+    "customerCode": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 8,
+      "metadata": {
+        "description": "Same customer code as Control Plane: 2–8 lowercase letters/digits, start with a letter, only single internal hyphens."
+      }
+    },
+    "location": {
+      "type": "string"
+    },
+    "existingVirtualNetworkResourceId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Existing enterprise VNet resource ID. Leave empty to let bootstrap create the default reporting VNet."
+      }
+    },
+    "existingContainerAppsSubnetResourceId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Container Apps delegated subnet resource ID inside the existing VNet."
+      }
+    },
+    "existingPostgresqlSubnetResourceId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "PostgreSQL delegated subnet resource ID inside the existing VNet."
+      }
+    },
+    "virtualNetworkAddressPrefix": {
+      "type": "string",
+      "defaultValue": "10.42.0.0/16"
+    },
+    "containerAppsSubnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "10.42.0.0/23"
+    },
+    "postgresqlSubnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "10.42.2.0/27"
+    },
+    "modules": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Exactly the selected Control Plane modules; cloud permissions are bootstrapped only for cloud."
+      }
+    },
+    "onboardingId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36
+    },
+    "entraTenantId": {
+      "type": "string",
+      "defaultValue": "[tenant().tenantId]",
+      "metadata": {
+        "description": "Must equal the tenant of the selected customer subscription."
+      }
+    },
+    "subscriptionId": {
+      "type": "string",
+      "defaultValue": "[subscription().subscriptionId]",
+      "metadata": {
+        "description": "Must equal the subscription selected in Deploy to Azure."
+      }
+    },
+    "controlPlaneUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "HTTPS origin of Control Plane, without a path or query."
+      }
+    },
+    "agentImage": {
+      "type": "string",
+      "metadata": {
+        "description": "Released agent image: registry/repository@sha256:<64 lowercase hex characters>. Tags are rejected."
+      }
+    },
+    "registryServer": {
+      "type": "string"
+    },
+    "registryUsername": {
+      "type": "string"
+    },
+    "registryPassword": {
+      "type": "securestring",
+      "minLength": 1
+    },
+    "enrollmentCode": {
+      "type": "securestring",
+      "minLength": 1
+    },
+    "tenantApiToken": {
+      "type": "securestring",
+      "minLength": 32
+    }
+  },
+  "variables": {
+    "imageParts": "[split(parameters('agentImage'), '@sha256:')]",
+    "digest": "[last(variables('imageParts'))]",
+    "validDigest": "[and(and(equals(length(variables('imageParts')), 2), equals(length(variables('digest')), 64)), equals(length(filter(range(0, length(variables('digest'))), lambda('i', not(contains('0123456789abcdef', substring(variables('digest'), lambdaVariables('i'), 1)))))), 0))]",
+    "validatedAgentImage": "[if(and(variables('validDigest'), startsWith(parameters('agentImage'), format('{0}/', parameters('registryServer')))), parameters('agentImage'), fail('agentImage must use the registryServer and an immutable sha256 digest'))]",
+    "validCustomerCode": "[and(and(and(contains('abcdefghijklmnopqrstuvwxyz', first(parameters('customerCode'))), contains('abcdefghijklmnopqrstuvwxyz0123456789', last(parameters('customerCode')))), not(contains(parameters('customerCode'), '--'))), equals(length(filter(range(0, length(parameters('customerCode'))), lambda('i', not(contains('abcdefghijklmnopqrstuvwxyz0123456789-', substring(parameters('customerCode'), lambdaVariables('i'), 1)))))), 0))]",
+    "validatedCustomerCode": "[if(variables('validCustomerCode'), parameters('customerCode'), fail('customerCode must start with a lowercase letter, end with a letter/digit and contain only lowercase letters/digits or single internal hyphens'))]",
+    "boundCustomerCode": "[if(and(equals(parameters('subscriptionId'), subscription().subscriptionId), equals(parameters('entraTenantId'), tenant().tenantId)), variables('validatedCustomerCode'), fail('Bootstrap tenant/subscription must match the selected Azure context'))]",
+    "existingNetworkCandidate": "[if(empty(parameters('existingVirtualNetworkResourceId')), format('/subscriptions/{0}/resourceGroups/rg-reporting-{1}/providers/Microsoft.Network/virtualNetworks/unused', subscription().subscriptionId, variables('boundCustomerCode')), parameters('existingVirtualNetworkResourceId'))]",
+    "existingNetworkParts": "[split(variables('existingNetworkCandidate'), '/')]",
+    "existingContainerAppsSubnetParts": "[split(parameters('existingContainerAppsSubnetResourceId'), '/')]",
+    "existingPostgresqlSubnetParts": "[split(parameters('existingPostgresqlSubnetResourceId'), '/')]",
+    "useExistingNetwork": "[not(empty(parameters('existingVirtualNetworkResourceId')))]",
+    "validExistingNetworkBinding": "[or(and(and(not(variables('useExistingNetwork')), empty(parameters('existingContainerAppsSubnetResourceId'))), empty(parameters('existingPostgresqlSubnetResourceId'))), and(and(and(and(and(and(and(and(and(and(and(and(variables('useExistingNetwork'), equals(length(variables('existingNetworkParts')), 9)), equals(toLower(variables('existingNetworkParts')[1]), 'subscriptions')), equals(variables('existingNetworkParts')[2], subscription().subscriptionId)), equals(toLower(variables('existingNetworkParts')[3]), 'resourcegroups')), equals(toLower(variables('existingNetworkParts')[5]), 'providers')), equals(toLower(variables('existingNetworkParts')[6]), 'microsoft.network')), equals(toLower(variables('existingNetworkParts')[7]), 'virtualnetworks')), equals(length(variables('existingContainerAppsSubnetParts')), 11)), equals(length(variables('existingPostgresqlSubnetParts')), 11)), startsWith(toLower(parameters('existingContainerAppsSubnetResourceId')), format('{0}/subnets/', toLower(parameters('existingVirtualNetworkResourceId'))))), startsWith(toLower(parameters('existingPostgresqlSubnetResourceId')), format('{0}/subnets/', toLower(parameters('existingVirtualNetworkResourceId'))))), not(equals(toLower(parameters('existingContainerAppsSubnetResourceId')), toLower(parameters('existingPostgresqlSubnetResourceId'))))))]",
+    "boundExistingVirtualNetworkResourceId": "[if(variables('validExistingNetworkBinding'), parameters('existingVirtualNetworkResourceId'), fail('Existing network IDs must be same-subscription VNet/subnet resource IDs and must be supplied together'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Resources/resourceGroups",
+      "apiVersion": "2024-03-01",
+      "name": "[format('rg-reporting-{0}', variables('boundCustomerCode'))]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "customer": "[parameters('customerCode')]",
+        "purpose": "reporting",
+        "onboardingId": "[parameters('onboardingId')]"
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "onboarding-naming",
+      "resourceGroup": "[format('rg-reporting-{0}', variables('boundCustomerCode'))]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "customerCode": {
+            "value": "[variables('validatedCustomerCode')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.48.1.52935",
+              "templateHash": "2522538430276110000"
+            }
+          },
+          "parameters": {
+            "customerCode": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 8
+            }
+          },
+          "variables": {
+            "uniqueSuffix": "[uniqueString(subscription().id, parameters('customerCode'))]",
+            "uniqueSuffixShort": "[substring(variables('uniqueSuffix'), 0, 8)]"
+          },
+          "resources": [],
+          "outputs": {
+            "logAnalyticsName": {
+              "type": "string",
+              "value": "[format('log-reporting-{0}', parameters('customerCode'))]"
+            },
+            "applicationInsightsName": {
+              "type": "string",
+              "value": "[format('appi-reporting-{0}', parameters('customerCode'))]"
+            },
+            "keyVaultName": {
+              "type": "string",
+              "value": "[format('kv-rpt-{0}-{1}', parameters('customerCode'), variables('uniqueSuffixShort'))]"
+            },
+            "runtimeIdentityName": {
+              "type": "string",
+              "value": "[format('id-reporting-{0}-runtime', parameters('customerCode'))]"
+            },
+            "postgresServerName": {
+              "type": "string",
+              "value": "[format('psql-reporting-{0}-{1}', parameters('customerCode'), variables('uniqueSuffix'))]"
+            },
+            "containerAppsEnvironmentName": {
+              "type": "string",
+              "value": "[format('cae-reporting-{0}', parameters('customerCode'))]"
+            },
+            "onboardingJobName": {
+              "type": "string",
+              "value": "[format('job-onboarding-{0}', parameters('customerCode'))]"
+            },
+            "onboardingIdentityName": {
+              "type": "string",
+              "value": "[format('id-reporting-{0}-onboarding', parameters('customerCode'))]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', format('rg-reporting-{0}', variables('boundCustomerCode')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "onboarding-agent",
+      "resourceGroup": "[format('rg-reporting-{0}', variables('boundCustomerCode'))]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "customerCode": {
+            "value": "[variables('validatedCustomerCode')]"
+          },
+          "modules": {
+            "value": "[parameters('modules')]"
+          },
+          "logAnalyticsName": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-naming'), '2025-04-01').outputs.logAnalyticsName.value]"
+          },
+          "keyVaultName": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-naming'), '2025-04-01').outputs.keyVaultName.value]"
+          },
+          "identityName": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-naming'), '2025-04-01').outputs.onboardingIdentityName.value]"
+          },
+          "runtimeIdentityName": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-naming'), '2025-04-01').outputs.runtimeIdentityName.value]"
+          },
+          "environmentName": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-naming'), '2025-04-01').outputs.containerAppsEnvironmentName.value]"
+          },
+          "jobName": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-naming'), '2025-04-01').outputs.onboardingJobName.value]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "existingVirtualNetworkResourceId": {
+            "value": "[variables('boundExistingVirtualNetworkResourceId')]"
+          },
+          "existingContainerAppsSubnetResourceId": {
+            "value": "[parameters('existingContainerAppsSubnetResourceId')]"
+          },
+          "existingPostgresqlSubnetResourceId": {
+            "value": "[parameters('existingPostgresqlSubnetResourceId')]"
+          },
+          "virtualNetworkAddressPrefix": {
+            "value": "[parameters('virtualNetworkAddressPrefix')]"
+          },
+          "containerAppsSubnetAddressPrefix": {
+            "value": "[parameters('containerAppsSubnetAddressPrefix')]"
+          },
+          "postgresqlSubnetAddressPrefix": {
+            "value": "[parameters('postgresqlSubnetAddressPrefix')]"
+          },
+          "onboardingId": {
+            "value": "[parameters('onboardingId')]"
+          },
+          "controlPlaneUrl": {
+            "value": "[parameters('controlPlaneUrl')]"
+          },
+          "agentImage": {
+            "value": "[variables('validatedAgentImage')]"
+          },
+          "registryServer": {
+            "value": "[parameters('registryServer')]"
+          },
+          "registryUsername": {
+            "value": "[parameters('registryUsername')]"
+          },
+          "registryPassword": {
+            "value": "[parameters('registryPassword')]"
+          },
+          "enrollmentCode": {
+            "value": "[parameters('enrollmentCode')]"
+          },
+          "tenantApiToken": {
+            "value": "[parameters('tenantApiToken')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.48.1.52935",
+              "templateHash": "9605599923658111656"
+            }
+          },
+          "parameters": {
+            "customerCode": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 8
+            },
+            "modules": {
+              "type": "array",
+              "defaultValue": []
+            },
+            "logAnalyticsName": {
+              "type": "string"
+            },
+            "keyVaultName": {
+              "type": "string"
+            },
+            "identityName": {
+              "type": "string"
+            },
+            "runtimeIdentityName": {
+              "type": "string"
+            },
+            "environmentName": {
+              "type": "string"
+            },
+            "jobName": {
+              "type": "string"
+            },
+            "location": {
+              "type": "string"
+            },
+            "existingVirtualNetworkResourceId": {
+              "type": "string",
+              "defaultValue": ""
+            },
+            "existingContainerAppsSubnetResourceId": {
+              "type": "string",
+              "defaultValue": ""
+            },
+            "existingPostgresqlSubnetResourceId": {
+              "type": "string",
+              "defaultValue": ""
+            },
+            "virtualNetworkAddressPrefix": {
+              "type": "string",
+              "defaultValue": "10.42.0.0/16"
+            },
+            "containerAppsSubnetAddressPrefix": {
+              "type": "string",
+              "defaultValue": "10.42.0.0/23"
+            },
+            "postgresqlSubnetAddressPrefix": {
+              "type": "string",
+              "defaultValue": "10.42.2.0/27"
+            },
+            "onboardingId": {
+              "type": "string"
+            },
+            "controlPlaneUrl": {
+              "type": "string"
+            },
+            "agentImage": {
+              "type": "string"
+            },
+            "registryServer": {
+              "type": "string"
+            },
+            "registryUsername": {
+              "type": "string"
+            },
+            "registryPassword": {
+              "type": "securestring"
+            },
+            "enrollmentCode": {
+              "type": "securestring"
+            },
+            "tenantApiToken": {
+              "type": "securestring"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.OperationalInsights/workspaces",
+              "apiVersion": "2025-07-01",
+              "name": "[parameters('logAnalyticsName')]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "sku": {
+                  "name": "PerGB2018"
+                },
+                "retentionInDays": 30
+              }
+            },
+            {
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+              "apiVersion": "2023-01-31",
+              "name": "[parameters('identityName')]",
+              "location": "[parameters('location')]"
+            },
+            {
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+              "apiVersion": "2023-01-31",
+              "name": "[parameters('runtimeIdentityName')]",
+              "location": "[parameters('location')]"
+            },
+            {
+              "condition": "[contains(parameters('modules'), 'cloud')]",
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+              "apiVersion": "2023-01-31",
+              "name": "[format('id-reporting-{0}-cloud-runner', parameters('customerCode'))]",
+              "location": "[parameters('location')]"
+            },
+            {
+              "type": "Microsoft.KeyVault/vaults",
+              "apiVersion": "2023-07-01",
+              "name": "[parameters('keyVaultName')]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "tenantId": "[tenant().tenantId]",
+                "sku": {
+                  "family": "A",
+                  "name": "standard"
+                },
+                "accessPolicies": [],
+                "enableRbacAuthorization": true,
+                "enableSoftDelete": true,
+                "softDeleteRetentionInDays": 90,
+                "enablePurgeProtection": true,
+                "enabledForDeployment": false,
+                "enabledForDiskEncryption": false,
+                "enabledForTemplateDeployment": false,
+                "publicNetworkAccess": "Enabled"
+              }
+            },
+            {
+              "type": "Microsoft.KeyVault/vaults/secrets",
+              "apiVersion": "2023-07-01",
+              "name": "[format('{0}/{1}', parameters('keyVaultName'), 'onboarding-enrollment-code')]",
+              "properties": {
+                "value": "[parameters('enrollmentCode')]",
+                "contentType": "onboarding-enrollment-code"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.KeyVault/vaults/secrets",
+              "apiVersion": "2023-07-01",
+              "name": "[format('{0}/{1}', parameters('keyVaultName'), 'control-plane-tenant-token')]",
+              "properties": {
+                "value": "[parameters('tenantApiToken')]",
+                "contentType": "control-plane-runtime-token"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.KeyVault/vaults/secrets",
+              "apiVersion": "2023-07-01",
+              "name": "[format('{0}/{1}', parameters('keyVaultName'), 'onboarding-acr-pull')]",
+              "properties": {
+                "value": "[parameters('registryPassword')]",
+                "contentType": "repository-scoped-acr-token"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.KeyVault/vaults/secrets",
+              "apiVersion": "2023-07-01",
+              "name": "[format('{0}/{1}', parameters('keyVaultName'), 'onboarding-acr-username')]",
+              "properties": {
+                "value": "[parameters('registryUsername')]",
+                "contentType": "repository-scoped-acr-username"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+              "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName')), 'onboarding-secrets-officer')]",
+              "properties": {
+                "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName')), '2023-01-31').principalId]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName'))]",
+                "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.App/managedEnvironments",
+              "apiVersion": "2024-03-01",
+              "name": "[parameters('environmentName')]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "workloadProfiles": [
+                  {
+                    "name": "Consumption",
+                    "workloadProfileType": "Consumption"
+                  }
+                ],
+                "vnetConfiguration": {
+                  "infrastructureSubnetId": "[reference(resourceId('Microsoft.Resources/deployments', 'onboarding-private-network'), '2025-04-01').outputs.infrastructureSubnetId.value]",
+                  "internal": false
+                },
+                "appLogsConfiguration": {
+                  "destination": "log-analytics",
+                  "logAnalyticsConfiguration": {
+                    "customerId": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsName')), '2025-07-01').customerId]",
+                    "sharedKey": "[listKeys(resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsName')), '2025-07-01').primarySharedKey]"
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsName'))]",
+                "[resourceId('Microsoft.Resources/deployments', 'onboarding-private-network')]"
+              ]
+            },
+            {
+              "type": "Microsoft.App/jobs",
+              "apiVersion": "2024-03-01",
+              "name": "[parameters('jobName')]",
+              "location": "[parameters('location')]",
+              "identity": {
+                "type": "UserAssigned",
+                "userAssignedIdentities": {
+                  "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName')))]": {}
+                }
+              },
+              "properties": {
+                "environmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+                "configuration": {
+                  "triggerType": "Schedule",
+                  "replicaRetryLimit": 1,
+                  "replicaTimeout": 1800,
+                  "scheduleTriggerConfig": {
+                    "cronExpression": "*/5 * * * *",
+                    "parallelism": 1,
+                    "replicaCompletionCount": 1
+                  },
+                  "registries": [
+                    {
+                      "server": "[parameters('registryServer')]",
+                      "username": "[parameters('registryUsername')]",
+                      "passwordSecretRef": "onboarding-acr-pull"
+                    }
+                  ],
+                  "secrets": [
+                    {
+                      "name": "onboarding-acr-pull",
+                      "keyVaultUrl": "[format('{0}secrets/onboarding-acr-pull', reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri)]",
+                      "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName'))]"
+                    }
+                  ]
+                },
+                "template": {
+                  "containers": [
+                    {
+                      "name": "onboarding-agent",
+                      "image": "[parameters('agentImage')]",
+                      "resources": {
+                        "cpu": "[json('0.5')]",
+                        "memory": "1Gi"
+                      },
+                      "env": [
+                        {
+                          "name": "CONTROL_PLANE_URL",
+                          "value": "[parameters('controlPlaneUrl')]"
+                        },
+                        {
+                          "name": "ONBOARDING_ID",
+                          "value": "[parameters('onboardingId')]"
+                        },
+                        {
+                          "name": "TENANT_ID",
+                          "value": "[parameters('customerCode')]"
+                        },
+                        {
+                          "name": "AZURE_SUBSCRIPTION_ID",
+                          "value": "[subscription().subscriptionId]"
+                        },
+                        {
+                          "name": "AZURE_TENANT_ID",
+                          "value": "[tenant().tenantId]"
+                        },
+                        {
+                          "name": "AZURE_CLIENT_ID",
+                          "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName')), '2023-01-31').clientId]"
+                        },
+                        {
+                          "name": "ONBOARDING_AGENT_RESOURCE_ID",
+                          "value": "[resourceId('Microsoft.App/jobs', parameters('jobName'))]"
+                        },
+                        {
+                          "name": "KEY_VAULT_URL",
+                          "value": "[reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri]"
+                        },
+                        {
+                          "name": "AGENT_IMAGE",
+                          "value": "[parameters('agentImage')]"
+                        },
+                        {
+                          "name": "VIRTUAL_NETWORK_RESOURCE_ID",
+                          "value": "[reference(resourceId('Microsoft.Resources/deployments', 'onboarding-private-network'), '2025-04-01').outputs.virtualNetworkResourceId.value]"
+                        },
+                        {
+                          "name": "CONTAINER_APPS_SUBNET_RESOURCE_ID",
+                          "value": "[reference(resourceId('Microsoft.Resources/deployments', 'onboarding-private-network'), '2025-04-01').outputs.infrastructureSubnetId.value]"
+                        },
+                        {
+                          "name": "POSTGRESQL_SUBNET_RESOURCE_ID",
+                          "value": "[reference(resourceId('Microsoft.Resources/deployments', 'onboarding-private-network'), '2025-04-01').outputs.postgresqlSubnetId.value]"
+                        },
+                        {
+                          "name": "VIRTUAL_NETWORK_ADDRESS_PREFIX",
+                          "value": "[parameters('virtualNetworkAddressPrefix')]"
+                        },
+                        {
+                          "name": "CONTAINER_APPS_SUBNET_ADDRESS_PREFIX",
+                          "value": "[parameters('containerAppsSubnetAddressPrefix')]"
+                        },
+                        {
+                          "name": "POSTGRESQL_SUBNET_ADDRESS_PREFIX",
+                          "value": "[parameters('postgresqlSubnetAddressPrefix')]"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'onboarding-enrollment-code')]",
+                "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName'))]",
+                "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName')), 'onboarding-secrets-officer'))]",
+                "[resourceId('Microsoft.Resources/deployments', 'onboarding-private-network')]",
+                "[resourceId('Microsoft.Resources/deployments', 'onboarding-rbac')]",
+                "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'onboarding-acr-pull')]",
+                "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'control-plane-tenant-token')]",
+                "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Insights/metricAlerts",
+              "apiVersion": "2018-03-01",
+              "name": "[format('alert-onboarding-failed-{0}', parameters('customerCode'))]",
+              "location": "global",
+              "properties": {
+                "description": "At least three failed onboarding executions in 30 minutes. Inspect the customer Log Analytics workspace.",
+                "severity": 2,
+                "enabled": true,
+                "scopes": [
+                  "[resourceId('Microsoft.App/jobs', parameters('jobName'))]"
+                ],
+                "evaluationFrequency": "PT5M",
+                "windowSize": "PT30M",
+                "autoMitigate": true,
+                "criteria": {
+                  "odata.type": "Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria",
+                  "allOf": [
+                    {
+                      "name": "failedExecutions",
+                      "criterionType": "StaticThresholdCriterion",
+                      "metricNamespace": "Microsoft.App/jobs",
+                      "metricName": "Executions",
+                      "operator": "GreaterThanOrEqual",
+                      "threshold": 3,
+                      "timeAggregation": "Total",
+                      "dimensions": [
+                        {
+                          "name": "state",
+                          "operator": "Include",
+                          "values": [
+                            "Failed"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.App/jobs', parameters('jobName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "onboarding-private-network",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "location": {
+                    "value": "[parameters('location')]"
+                  },
+                  "customerCode": {
+                    "value": "[parameters('customerCode')]"
+                  },
+                  "existingVirtualNetworkResourceId": {
+                    "value": "[parameters('existingVirtualNetworkResourceId')]"
+                  },
+                  "existingContainerAppsSubnetResourceId": {
+                    "value": "[parameters('existingContainerAppsSubnetResourceId')]"
+                  },
+                  "existingPostgresqlSubnetResourceId": {
+                    "value": "[parameters('existingPostgresqlSubnetResourceId')]"
+                  },
+                  "virtualNetworkAddressPrefix": {
+                    "value": "[parameters('virtualNetworkAddressPrefix')]"
+                  },
+                  "containerAppsSubnetAddressPrefix": {
+                    "value": "[parameters('containerAppsSubnetAddressPrefix')]"
+                  },
+                  "postgresqlSubnetAddressPrefix": {
+                    "value": "[parameters('postgresqlSubnetAddressPrefix')]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.48.1.52935",
+                      "templateHash": "4837711045943461972"
+                    }
+                  },
+                  "parameters": {
+                    "location": {
+                      "type": "string"
+                    },
+                    "customerCode": {
+                      "type": "string"
+                    },
+                    "existingVirtualNetworkResourceId": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "existingContainerAppsSubnetResourceId": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "existingPostgresqlSubnetResourceId": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "virtualNetworkAddressPrefix": {
+                      "type": "string",
+                      "defaultValue": "10.42.0.0/16"
+                    },
+                    "containerAppsSubnetAddressPrefix": {
+                      "type": "string",
+                      "defaultValue": "10.42.0.0/23"
+                    },
+                    "postgresqlSubnetAddressPrefix": {
+                      "type": "string",
+                      "defaultValue": "10.42.2.0/27"
+                    }
+                  },
+                  "variables": {
+                    "useExistingNetwork": "[not(empty(parameters('existingVirtualNetworkResourceId')))]",
+                    "defaultVirtualNetworkResourceId": "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-reporting-{0}', parameters('customerCode')))]",
+                    "defaultContainerAppsSubnetResourceId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', format('vnet-reporting-{0}', parameters('customerCode')), 'container-apps')]",
+                    "defaultPostgresqlSubnetResourceId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', format('vnet-reporting-{0}', parameters('customerCode')), 'postgresql')]",
+                    "validExistingNetworkIds": "[or(not(variables('useExistingNetwork')), and(and(and(not(empty(parameters('existingContainerAppsSubnetResourceId'))), not(empty(parameters('existingPostgresqlSubnetResourceId')))), startsWith(toLower(parameters('existingContainerAppsSubnetResourceId')), format('{0}/subnets/', toLower(parameters('existingVirtualNetworkResourceId'))))), startsWith(toLower(parameters('existingPostgresqlSubnetResourceId')), format('{0}/subnets/', toLower(parameters('existingVirtualNetworkResourceId'))))))]",
+                    "validatedExistingVirtualNetworkResourceId": "[if(variables('validExistingNetworkIds'), parameters('existingVirtualNetworkResourceId'), fail('Existing subnet resource IDs must be children of the supplied VNet resource ID'))]",
+                    "resolvedVirtualNetworkResourceId": "[if(variables('useExistingNetwork'), variables('validatedExistingVirtualNetworkResourceId'), variables('defaultVirtualNetworkResourceId'))]",
+                    "resolvedContainerAppsSubnetResourceId": "[if(variables('useExistingNetwork'), parameters('existingContainerAppsSubnetResourceId'), variables('defaultContainerAppsSubnetResourceId'))]",
+                    "resolvedPostgresqlSubnetResourceId": "[if(variables('useExistingNetwork'), parameters('existingPostgresqlSubnetResourceId'), variables('defaultPostgresqlSubnetResourceId'))]"
+                  },
+                  "resources": [
+                    {
+                      "condition": "[not(variables('useExistingNetwork'))]",
+                      "type": "Microsoft.Network/virtualNetworks",
+                      "apiVersion": "2024-05-01",
+                      "name": "[format('vnet-reporting-{0}', parameters('customerCode'))]",
+                      "location": "[parameters('location')]",
+                      "properties": {
+                        "addressSpace": {
+                          "addressPrefixes": [
+                            "[parameters('virtualNetworkAddressPrefix')]"
+                          ]
+                        },
+                        "subnets": [
+                          {
+                            "name": "container-apps",
+                            "properties": {
+                              "addressPrefix": "[parameters('containerAppsSubnetAddressPrefix')]",
+                              "delegations": [
+                                {
+                                  "name": "container-apps",
+                                  "properties": {
+                                    "serviceName": "Microsoft.App/environments"
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "name": "postgresql",
+                            "properties": {
+                              "addressPrefix": "[parameters('postgresqlSubnetAddressPrefix')]",
+                              "delegations": [
+                                {
+                                  "name": "postgresql",
+                                  "properties": {
+                                    "serviceName": "Microsoft.DBforPostgreSQL/flexibleServers"
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "type": "Microsoft.Network/privateDnsZones",
+                      "apiVersion": "2024-06-01",
+                      "name": "[format('reporting-{0}.postgres.database.azure.com', parameters('customerCode'))]",
+                      "location": "global"
+                    },
+                    {
+                      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+                      "apiVersion": "2024-06-01",
+                      "name": "[format('{0}/{1}', format('reporting-{0}.postgres.database.azure.com', parameters('customerCode')), 'reporting')]",
+                      "location": "global",
+                      "properties": {
+                        "registrationEnabled": false,
+                        "virtualNetwork": {
+                          "id": "[variables('resolvedVirtualNetworkResourceId')]"
+                        }
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.Network/privateDnsZones', format('reporting-{0}.postgres.database.azure.com', parameters('customerCode')))]",
+                        "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-reporting-{0}', parameters('customerCode')))]"
+                      ]
+                    }
+                  ],
+                  "outputs": {
+                    "virtualNetworkResourceId": {
+                      "type": "string",
+                      "value": "[variables('resolvedVirtualNetworkResourceId')]"
+                    },
+                    "infrastructureSubnetId": {
+                      "type": "string",
+                      "value": "[variables('resolvedContainerAppsSubnetResourceId')]"
+                    },
+                    "postgresqlSubnetId": {
+                      "type": "string",
+                      "value": "[variables('resolvedPostgresqlSubnetResourceId')]"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "onboarding-rbac",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "agentPrincipalId": {
+                    "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName')), '2023-01-31').principalId]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.48.1.52935",
+                      "templateHash": "13565513174462114817"
+                    }
+                  },
+                  "parameters": {
+                    "agentPrincipalId": {
+                      "type": "string"
+                    }
+                  },
+                  "variables": {
+                    "allowedRoleDefinitionIds": [
+                      "4633458b-17de-408a-b874-0445c86b69e6",
+                      "a4417e6f-fecd-4de8-b567-7b0420556985",
+                      "12338af0-0e69-4776-bea7-57ae8d297424",
+                      "69a216fc-b8fb-44d8-bc22-1f3c2cd27a39",
+                      "4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0"
+                    ],
+                    "roleSet": "[join(variables('allowedRoleDefinitionIds'), ', ')]",
+                    "writeCondition": "[format('((!(ActionMatches{{''Microsoft.Authorization/roleAssignments/write''}})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {{{0}}} AND @Request[Microsoft.Authorization/roleAssignments:PrincipalType] ForAnyOfAnyValues:StringEqualsIgnoreCase {{''ServicePrincipal''}}))', variables('roleSet'))]",
+                    "deleteCondition": "[format('((!(ActionMatches{{''Microsoft.Authorization/roleAssignments/delete''}})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {{{0}}} AND @Resource[Microsoft.Authorization/roleAssignments:PrincipalType] ForAnyOfAnyValues:StringEqualsIgnoreCase {{''ServicePrincipal''}}))', variables('roleSet'))]"
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.Authorization/roleAssignments",
+                      "apiVersion": "2022-04-01",
+                      "name": "[guid(resourceGroup().id, parameters('agentPrincipalId'), 'onboarding-contributor')]",
+                      "properties": {
+                        "principalId": "[parameters('agentPrincipalId')]",
+                        "principalType": "ServicePrincipal",
+                        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b24988ac-6180-42a0-ab88-20f7382dd24c')]"
+                      }
+                    },
+                    {
+                      "type": "Microsoft.Authorization/roleAssignments",
+                      "apiVersion": "2022-04-01",
+                      "name": "[guid(resourceGroup().id, parameters('agentPrincipalId'), 'onboarding-constrained-rbac')]",
+                      "properties": {
+                        "principalId": "[parameters('agentPrincipalId')]",
+                        "principalType": "ServicePrincipal",
+                        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'f58310d9-a9f6-439a-9e8d-f62e7b41a168')]",
+                        "conditionVersion": "2.0",
+                        "condition": "[format('{0} AND {1}', variables('writeCondition'), variables('deleteCondition'))]"
+                      }
+                    }
+                  ]
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "agentResourceId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.App/jobs', parameters('jobName'))]"
+            },
+            "agentPrincipalId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', parameters('identityName')), '2023-01-31').principalId]"
+            },
+            "cloudPrincipalId": {
+              "type": "string",
+              "value": "[if(contains(parameters('modules'), 'cloud'), reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-reporting-{0}-cloud-runner', parameters('customerCode'))), '2023-01-31').principalId, '')]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-naming')]",
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', format('rg-reporting-{0}', variables('boundCustomerCode')))]"
+      ]
+    },
+    {
+      "condition": "[not(empty(variables('boundExistingVirtualNetworkResourceId')))]",
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "onboarding-existing-network-reader",
+      "subscriptionId": "[variables('existingNetworkParts')[2]]",
+      "resourceGroup": "[variables('existingNetworkParts')[4]]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "virtualNetworkName": {
+            "value": "[variables('existingNetworkParts')[8]]"
+          },
+          "principalId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-agent'), '2025-04-01').outputs.agentPrincipalId.value]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.48.1.52935",
+              "templateHash": "3991002871376793068"
+            }
+          },
+          "parameters": {
+            "virtualNetworkName": {
+              "type": "string"
+            },
+            "principalId": {
+              "type": "string"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.Network/virtualNetworks', parameters('virtualNetworkName'))]",
+              "name": "[guid(resourceId('Microsoft.Network/virtualNetworks', parameters('virtualNetworkName')), parameters('principalId'), 'onboarding-network-reader')]",
+              "properties": {
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')]"
+              }
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-agent')]"
+      ]
+    },
+    {
+      "condition": "[contains(parameters('modules'), 'cloud')]",
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "onboarding-cloud-rbac",
+      "location": "[deployment().location]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "principalId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-agent'), '2025-04-01').outputs.cloudPrincipalId.value]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.48.1.52935",
+              "templateHash": "2419507357444899311"
+            }
+          },
+          "parameters": {
+            "principalId": {
+              "type": "string",
+              "metadata": {
+                "description": "Principal ID of the Cloud runner managed identity."
+              }
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[guid(subscription().id, parameters('principalId'), 'Reader')]",
+              "properties": {
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')]"
+              }
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[guid(subscription().id, parameters('principalId'), 'Cost Management Reader')]",
+              "properties": {
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '72fafb9e-0641-4937-9268-a91bfd8191a3')]"
+              }
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[guid(subscription().id, parameters('principalId'), 'Security Reader')]",
+              "properties": {
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '39bc4728-0917-49c7-9d2c-d95423bc2eb4')]"
+              }
+            }
+          ],
+          "outputs": {
+            "operationId": {
+              "type": "string",
+              "value": "[subscriptionResourceId('Microsoft.Resources/deployments', deployment().name)]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-agent')]"
+      ]
+    },
+    {
+      "condition": "[contains(parameters('modules'), 'cloud')]",
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "onboarding-cloud-attestation",
+      "resourceGroup": "[format('rg-reporting-{0}', variables('boundCustomerCode'))]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "keyVaultName": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-naming'), '2025-04-01').outputs.keyVaultName.value]"
+          },
+          "principalId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-agent'), '2025-04-01').outputs.cloudPrincipalId.value]"
+          },
+          "operationId": {
+            "value": "[reference(subscriptionResourceId('Microsoft.Resources/deployments', 'onboarding-cloud-rbac'), '2025-04-01').outputs.operationId.value]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.48.1.52935",
+              "templateHash": "13065129294244443348"
+            }
+          },
+          "parameters": {
+            "keyVaultName": {
+              "type": "string"
+            },
+            "principalId": {
+              "type": "string"
+            },
+            "operationId": {
+              "type": "string"
+            }
+          },
+          "variables": {
+            "$fxv#0": {
+              "template_digest": "sha256:c8258008cbf1bf5d10cb1bed40c608607d1d6b02e7229266893679613d2b5e17"
+            },
+            "contract": "[variables('$fxv#0')]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.KeyVault/vaults/secrets",
+              "apiVersion": "2023-07-01",
+              "name": "[format('{0}/{1}', parameters('keyVaultName'), 'onboarding-cloud-rbac-attestation')]",
+              "properties": {
+                "contentType": "public-bootstrap-cloud-rbac-provenance",
+                "value": "[string(createObject('subscription_id', subscription().subscriptionId, 'principal_id', parameters('principalId'), 'role_definition_ids', createArray('acdd72a7-3385-48ef-bd42-f606fba81ae7', '72fafb9e-0641-4937-9268-a91bfd8191a3', '39bc4728-0917-49c7-9d2c-d95423bc2eb4'), 'template_digest', variables('contract').template_digest, 'operation_id', parameters('operationId')))]"
+              }
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-agent')]",
+        "[subscriptionResourceId('Microsoft.Resources/deployments', 'onboarding-cloud-rbac')]",
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-naming')]",
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', format('rg-reporting-{0}', variables('boundCustomerCode')))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "resourceGroupName": {
+      "type": "string",
+      "value": "[format('rg-reporting-{0}', variables('boundCustomerCode'))]"
+    },
+    "agentResourceId": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, format('rg-reporting-{0}', variables('boundCustomerCode'))), 'Microsoft.Resources/deployments', 'onboarding-agent'), '2025-04-01').outputs.agentResourceId.value]"
+    }
+  }
+}
